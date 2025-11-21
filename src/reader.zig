@@ -1,16 +1,14 @@
-// reader.zig
 const std = @import("std");
 const enums = @import("enums.zig");
+const types = @import("types.zig");
+
 const Tag = enums.Tag;
 const TagType = enums.TagType;
-const types = @import("types.zig");
 const NamedTag = types.NamedTag;
 const Compound = types.Compound;
 const List = types.List;
 
-const Error = error{
-    InvalidLength,
-} || std.Io.Reader.ReadAllocError;
+pub const ReadError = error{InvalidLength} || std.mem.Allocator.Error || std.Io.Reader.Error;
 
 const Reader = @This();
 
@@ -19,125 +17,93 @@ reader: *std.Io.Reader,
 endian: std.builtin.Endian,
 
 pub fn init(allocator: std.mem.Allocator, reader: *std.Io.Reader, endian: std.builtin.Endian) Reader {
-    return .{
-        .allocator = allocator,
-        .reader = reader,
-        .endian = endian,
+    return .{ .allocator = allocator, .reader = reader, .endian = endian };
+}
+
+pub fn readTag(self: *Reader) ReadError!Tag {
+    const tag_type = try self.readTagType();
+    return self.readTagPayload(tag_type);
+}
+
+pub fn readNamedTag(self: *Reader) ReadError!NamedTag {
+    const tag_type = try self.readTagType();
+
+    if (tag_type == .end) {
+        return NamedTag{ .name = .{ .static = "" }, .tag = .{ .end = {} } };
+    }
+
+    const name = try self.readString();
+    errdefer self.allocator.free(name);
+
+    const tag = try self.readTagPayload(tag_type);
+    return NamedTag{ .name = .{ .owned = name }, .tag = tag };
+}
+
+pub fn readTagPayload(self: *Reader, tag_type: TagType) ReadError!Tag {
+    return switch (tag_type) {
+        .end => .{ .end = {} },
+        .byte => .{ .byte = try self.readValue(i8) },
+        .short => .{ .short = try self.readValue(i16) },
+        .int => .{ .int = try self.readValue(i32) },
+        .long => .{ .long = try self.readValue(i64) },
+        .float => .{ .float = @bitCast(try self.readValue(u32)) },
+        .double => .{ .double = @bitCast(try self.readValue(u64)) },
+        .byte_array => .{ .byte_array = try self.readArray(i8) },
+        .string => .{ .string = try self.readString() },
+        .list => .{ .list = try self.readList() },
+        .compound => .{ .compound = try self.readCompound() },
+        .int_array => .{ .int_array = try self.readArray(i32) },
+        .long_array => .{ .long_array = try self.readArray(i64) },
     };
 }
 
-pub fn readTag(self: *Reader) Error!Tag {
-    var tag_type_buffer: [1]u8 = undefined;
-    try self.reader.readSliceEndian(u8, &tag_type_buffer, self.endian);
-    const tag_type: TagType = @enumFromInt(tag_type_buffer[0]);
-
-    return try self.readTagPayload(tag_type);
+// Helper methods
+inline fn readTagType(self: *Reader) ReadError!TagType {
+    var buf: [1]u8 = undefined;
+    try self.reader.readSliceEndian(u8, &buf, self.endian);
+    return @enumFromInt(buf[0]);
 }
 
-pub fn readTagPayload(self: *Reader, tagType: TagType) Error!Tag {
-    return switch (tagType) {
-        .end => try self.readEndTag(),
-        .byte => try self.readByteTag(),
-        .short => try self.readShortTag(),
-        .int => try self.readIntTag(),
-        .long => try self.readLongTag(),
-        .float => try self.readFloatTag(),
-        .double => try self.readDoubleTag(),
-        .byte_array => try self.readByteArrayTag(),
-        .string => try self.readStringTag(),
-        .list => try self.readListTag(),
-        .compound => try self.readCompoundTag(),
-        .int_array => try self.readIntArrayTag(),
-        .long_array => try self.readLongArrayTag(),
-    };
+inline fn readValue(self: *Reader, comptime T: type) ReadError!T {
+    var buf: [1]T = undefined;
+    try self.reader.readSliceEndian(T, &buf, self.endian);
+    return buf[0];
 }
 
-fn readEndTag(_: *Reader) !Tag {
-    return Tag{ .end = {} };
+fn readLength(self: *Reader) ReadError!usize {
+    const len = try self.readValue(i32);
+    if (len < 0) return error.InvalidLength;
+    return @intCast(len);
 }
 
-fn readByteTag(self: *Reader) !Tag {
-    var value_buf: [1]u8 = undefined;
-    try self.reader.readSliceEndian(u8, &value_buf, self.endian);
-    return Tag{ .byte = @bitCast(value_buf[0]) };
+fn readString(self: *Reader) ReadError![]const u8 {
+    const len = try self.readValue(u16);
+    const str = try self.reader.readSliceEndianAlloc(self.allocator, u8, len, self.endian);
+    errdefer self.allocator.free(str);
+    return str;
 }
 
-fn readShortTag(self: *Reader) !Tag {
-    var value_buf: [1]i16 = undefined;
-    try self.reader.readSliceEndian(i16, &value_buf, self.endian);
-    return Tag{ .short = value_buf[0] };
+fn readArray(self: *Reader, comptime T: type) ReadError![]T {
+    const len = try self.readLength();
+    return try self.reader.readSliceEndianAlloc(self.allocator, T, len, self.endian);
 }
 
-fn readIntTag(self: *Reader) !Tag {
-    var value_buf: [1]i32 = undefined;
-    try self.reader.readSliceEndian(i32, &value_buf, self.endian);
-    return Tag{ .int = value_buf[0] };
-}
-
-fn readLongTag(self: *Reader) !Tag {
-    var value_buf: [1]i64 = undefined;
-    try self.reader.readSliceEndian(i64, &value_buf, self.endian);
-    return Tag{ .long = value_buf[0] };
-}
-
-fn readFloatTag(self: *Reader) !Tag {
-    var value_buf: [1]u32 = undefined;
-    try self.reader.readSliceEndian(u32, &value_buf, self.endian);
-    return Tag{ .float = @bitCast(value_buf[0]) };
-}
-
-fn readDoubleTag(self: *Reader) !Tag {
-    var value_buf: [1]u64 = undefined;
-    try self.reader.readSliceEndian(u64, &value_buf, self.endian);
-    return Tag{ .double = @bitCast(value_buf[0]) };
-}
-
-fn readByteArrayTag(self: *Reader) !Tag {
-    var length_buf: [1]i32 = undefined;
-    try self.reader.readSliceEndian(i32, &length_buf, self.endian);
-    if (length_buf[0] < 0) return error.InvalidLength;
-
-    const arr = try self.reader.readSliceEndianAlloc(self.allocator, i8, @intCast(length_buf[0]), self.endian);
-    errdefer self.allocator.free(arr);
-
-    return Tag{ .byte_array = arr };
-}
-
-fn readString(self: *Reader) ![]const u8 {
-    var length_buf: [1]u16 = undefined;
-    try self.reader.readSliceEndian(u16, &length_buf, self.endian);
-    const out = try self.reader.readSliceEndianAlloc(self.allocator, u8, length_buf[0], self.endian);
-    errdefer self.allocator.free(out);
-    return out;
-}
-
-fn readStringTag(self: *Reader) !Tag {
-    const str = try self.readString();
-    return Tag{ .string = str };
-}
-
-fn readListTag(self: *Reader) !Tag {
-    var element_type_byte_buf: [1]u8 = undefined;
-    try self.reader.readSliceEndian(u8, &element_type_byte_buf, self.endian);
-    const element_type: TagType = @enumFromInt(element_type_byte_buf[0]);
-
-    var length_buf: [1]i32 = undefined;
-    try self.reader.readSliceEndian(i32, &length_buf, self.endian);
-    if (length_buf[0] < 0) return error.InvalidLength;
+fn readList(self: *Reader) ReadError!List {
+    const element_type = try self.readTagType();
+    const len = try self.readLength();
 
     var list = List.init(self.allocator, element_type);
     errdefer list.deinit();
 
-    var i: usize = 0;
-    while (i < @as(usize, @intCast(length_buf[0]))) : (i += 1) {
+    for (0..len) |_| {
         const tag = try self.readTagPayload(element_type);
         try list.append(tag);
     }
 
-    return Tag{ .list = list };
+    return list;
 }
 
-fn readCompoundTag(self: *Reader) !Tag {
+fn readCompound(self: *Reader) ReadError!Compound {
     var compound = Compound.init(self.allocator);
     errdefer compound.deinit();
 
@@ -145,75 +111,26 @@ fn readCompoundTag(self: *Reader) !Tag {
         const named_tag = try self.readNamedTag();
 
         if (named_tag.tag == .end) {
-            switch (named_tag.name) {
-                .owned => self.allocator.free(named_tag.name.owned),
-                .static => {},
+            if (named_tag.name == .owned) {
+                self.allocator.free(named_tag.name.owned);
             }
             break;
         }
 
-        // Free the name after putting it in the compound
-        // The compound should be responsible for managing its own keys
-        errdefer switch (named_tag.name) {
-            .owned => self.allocator.free(named_tag.name.owned),
-            .static => {},
+        errdefer if (named_tag.name == .owned) {
+            self.allocator.free(named_tag.name.owned);
         };
 
         const key = switch (named_tag.name) {
-            .owned => named_tag.name.owned,
-            .static => named_tag.name.static,
+            .owned => |k| k,
+            .static => |k| k,
         };
 
-        // Use putOwned for owned keys so they get freed properly
         switch (named_tag.name) {
             .owned => try compound.putOwned(key, named_tag.tag),
             .static => try compound.put(key, named_tag.tag),
         }
     }
 
-    return Tag{ .compound = compound };
-}
-
-pub fn readNamedTag(self: *Reader) !NamedTag {
-    var tag_type_buffer: [1]u8 = undefined;
-    try self.reader.readSliceEndian(u8, &tag_type_buffer, self.endian);
-    const tag_type: TagType = @enumFromInt(tag_type_buffer[0]);
-
-    if (tag_type == .end) {
-        return NamedTag{
-            .name = .{ .static = "" },
-            .tag = Tag{ .end = {} },
-        };
-    }
-
-    const name = try self.readString();
-    errdefer self.allocator.free(name);
-
-    const tag = try self.readTagPayload(tag_type);
-
-    return NamedTag{
-        .name = .{ .owned = name },
-        .tag = tag,
-    };
-}
-
-fn readIntArrayTag(self: *Reader) !Tag {
-    var length_buf: [1]i32 = undefined;
-    try self.reader.readSliceEndian(i32, &length_buf, self.endian);
-    if (length_buf[0] < 0) return error.InvalidLength;
-
-    const arr = try self.allocator.alloc(i32, @intCast(length_buf[0]));
-    errdefer self.allocator.free(arr);
-    return Tag{ .int_array = arr };
-}
-
-fn readLongArrayTag(self: *Reader) !Tag {
-    var length_buf: [1]i32 = undefined;
-    try self.reader.readSliceEndian(i32, &length_buf, .big);
-    if (length_buf[0] < 0) return error.InvalidLength;
-
-    const arr = try self.allocator.alloc(i64, @intCast(length_buf[0]));
-    errdefer self.allocator.free(arr);
-
-    return Tag{ .long_array = arr };
+    return compound;
 }

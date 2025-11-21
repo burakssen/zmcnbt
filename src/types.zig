@@ -1,6 +1,7 @@
 const std = @import("std");
 const enums = @import("enums.zig");
 const Tag = enums.Tag;
+const TagType = enums.TagType;
 
 pub const TagName = union(enum) {
     owned: []const u8,
@@ -12,9 +13,8 @@ pub const NamedTag = struct {
     tag: Tag,
 
     pub fn deinit(self: *NamedTag, allocator: std.mem.Allocator) void {
-        switch (self.name) {
-            .owned => |owned| allocator.free(owned),
-            .static => {},
+        if (self.name == .owned) {
+            allocator.free(self.name.owned);
         }
         self.tag.deinit(allocator);
     }
@@ -23,7 +23,7 @@ pub const NamedTag = struct {
 pub const Compound = struct {
     allocator: std.mem.Allocator,
     tags: std.StringHashMap(Tag),
-    owned_keys: std.StringHashMap(void), // Track which keys are owned
+    owned_keys: std.StringHashMap(void),
 
     pub fn init(allocator: std.mem.Allocator) Compound {
         return .{
@@ -34,8 +34,8 @@ pub const Compound = struct {
     }
 
     pub fn deinit(self: *Compound) void {
-        var it = self.tags.iterator();
-        while (it.next()) |entry| {
+        var iter = self.tags.iterator();
+        while (iter.next()) |entry| {
             if (self.owned_keys.contains(entry.key_ptr.*)) {
                 self.allocator.free(entry.key_ptr.*);
             }
@@ -61,10 +61,10 @@ pub const Compound = struct {
 
 pub const List = struct {
     allocator: std.mem.Allocator,
-    tag_type: enums.TagType,
+    tag_type: TagType,
     items: std.ArrayList(Tag),
 
-    pub fn init(allocator: std.mem.Allocator, tag_type: enums.TagType) List {
+    pub fn init(allocator: std.mem.Allocator, tag_type: TagType) List {
         return .{
             .allocator = allocator,
             .tag_type = tag_type,
