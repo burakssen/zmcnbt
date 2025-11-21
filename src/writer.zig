@@ -83,13 +83,12 @@ pub fn writeNamedTag(self: *Writer, named_tag: NamedTag) Error!void {
 }
 
 pub fn writeFloat(self: *Writer, comptype: type, value: anytype) Error!void {
-    const bytes = @sizeOf(comptype);
-    switch (bytes) {
-        4 => {
+    switch (comptype) {
+        f32 => {
             const as_int: u32 = @bitCast(@as(f32, @bitCast(value)));
             try self.writer.writeInt(u32, as_int, self.endian);
         },
-        8 => {
+        f64 => {
             const as_int: u64 = @bitCast(@as(f64, @bitCast(value)));
             try self.writer.writeInt(u64, as_int, self.endian);
         },
