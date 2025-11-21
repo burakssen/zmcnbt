@@ -1,0 +1,7 @@
+.{
+    .name = .zmcnbt,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.15.2",
+    .paths = .{""},
+    .fingerprint = 0x11a03e3f1df87149,
+}
